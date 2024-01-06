@@ -56,6 +56,7 @@ const (
 	HEARTBEAT_TIMEOUT    = 100
 	MIN_ELECTION_TIMEOUT = 150
 	MAX_ELECTION_TIMEOUT = 300
+	RPC_TIMEOUT          = time.Second
 )
 
 // A Go object implementing a single Raft peer.
@@ -401,7 +402,6 @@ func (rf *Raft) tryElection() {
 				}(i)
 			}
 
-			time.Sleep(100 * time.Millisecond)
 			if rf.state == Candidate {
 				// fmt.PrintLn(rf.me, "still candidate, counting votes")
 				for range rf.peers {
@@ -411,8 +411,9 @@ func (rf *Raft) tryElection() {
 							voteCount++
 							// fmt.PrintLn(rf.me, "vote count", voteCount)
 						}
-					default:
-						// fmt.PrintLn(rf.me, "failed to collect vote from some peers, try another round later")
+					case <-time.After(RPC_TIMEOUT):
+						// fmt.PrintLn(rf.me, "request vote timeout")
+						break
 					}
 				}
 				if voteCount > len(rf.peers)/2 {
@@ -480,8 +481,9 @@ func (rf *Raft) tryElection() {
 							voteCount++
 							// fmt.PrintLn(rf.me, "vote count", voteCount)
 						}
-					default:
-						// fmt.PrintLn(rf.me, "failed to collect vote from some peers, try another round later")
+					case <-time.After(RPC_TIMEOUT):
+						// fmt.PrintLn(rf.me, "request vote timeout")
+						break
 					}
 				}
 				if voteCount > len(rf.peers)/2 {
