@@ -20,6 +20,7 @@ package raft
 import (
 	"bytes"
 	"encoding/gob"
+	"fmt"
 	"labrpc"
 	"math/rand"
 	"sync"
@@ -80,8 +81,9 @@ type Raft struct {
 	LastApplied int
 
 	// Volatile state on leaders
-	NextIndex  []int
-	MatchIndex []int
+	NextIndex     []int
+	MatchIndex    []int
+	lastSendIndex int
 
 	state         int
 	applyChannel  chan ApplyMsg
@@ -253,10 +255,12 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	fmt.Println(rf.me, "receive command")
 	index := -1
 	term := rf.CurrentTerm
 	isLeader := rf.state == Leader
 	if isLeader {
+		fmt.Println(rf.me, "as the leader, append log")
 		index = len(rf.Logs)
 		rf.Logs = append(rf.Logs, LogEntry{Term: term, Command: command})
 		rf.persist()
@@ -344,7 +348,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here.
 	rf.CurrentTerm = 0
 	rf.VotedFor = -1
-	rf.Logs = []LogEntry{}
+	rf.Logs = []LogEntry{
+		{Term: 0, Command: nil},
+	}
 	rf.CommitIndex = 0
 	rf.LastApplied = 0
 	rf.NextIndex = make([]int, len(peers))
@@ -369,7 +375,7 @@ func (rf *Raft) tryElection() {
 		if rf.state == Leader {
 			// Leader -> Leader, heart beating
 			// fmt.Println(rf.me, "already leader, heart beat")
-			rf.heartBeat()
+			rf.sendAppendEntries()
 			continue
 		}
 		if rf.state == Follower {
@@ -431,7 +437,7 @@ func (rf *Raft) tryElection() {
 					// become leader
 					// fmt.Println(rf.me, "should become leader")
 					rf.beLeader()
-					rf.heartBeat()
+					rf.sendAppendEntries()
 				} else {
 					// election failed
 					// fmt.Println(rf.me, "election failed, try another round later")
@@ -501,7 +507,7 @@ func (rf *Raft) tryElection() {
 					// become leader
 					// fmt.Println(rf.me, "should become leader")
 					rf.beLeader()
-					rf.heartBeat()
+					rf.sendAppendEntries()
 					continue
 				} else {
 					// election failed
@@ -515,29 +521,56 @@ func (rf *Raft) tryElection() {
 	}
 }
 
-func (rf *Raft) heartBeat() {
+func (rf *Raft) sendAppendEntries() {
+	// rf.mu.Lock()
+	// updateEndIndex := len(rf.Logs)
+	// isHeartBeat := updateEndIndex == rf.lastSendIndex
+	// rf.lastSendIndex = updateEndIndex // ?
+	// rf.mu.Unlock()
+	appendResult := make(chan bool, len(rf.peers))
 	for i := range rf.peers {
 		if i == rf.me {
+			// don't send heart beat to self
+			appendResult <- true
 			continue
 		}
 		go func(dst int) {
 			// fmt.Println(rf.me, "send heart beat to", dst)
+			var entries []LogEntry = nil
 			args := AppendEntriesArgs{
 				Term:         rf.CurrentTerm,
 				LeaderId:     rf.me,
-				PrevLogIndex: len(rf.Logs),
-				PrevLogTerm:  0,
-				Entries:      nil,
+				PrevLogIndex: rf.NextIndex[dst] - 1,             // 认为我们已对这个日志（及其之前）达成了一致
+				PrevLogTerm:  rf.Logs[rf.NextIndex[dst]-1].Term, // 认为我们已对这个日志（及其之前）达成了一致
+				Entries:      entries,                           // 基于上两条假设所需要你附加的新日志
 				LeaderCommit: rf.CommitIndex,
+			}
+			if rf.NextIndex[dst] < len(rf.Logs) {
+				// not only heartbeat
 			}
 			reply := AppendEntriesReply{}
 			ok := rf.peers[dst].Call("Raft.AppendEntries", args, &reply)
 			if ok {
 				// fmt.Println(rf.me, "receive heartbeat from", dst)
+				appendResult <- reply.Success
 			} else {
-				// fmt.Println(rf.me, "failed to send heartbeat to", dst)
+				fmt.Println(rf.me, "failed to send heartbeat to", dst)
 			}
 		}(i)
+	}
+
+	for range rf.peers {
+		select {
+		case success := <-appendResult:
+			if success {
+				// fmt.Println(rf.me, "append success")
+			} else {
+				// fmt.Println(rf.me, "append failed")
+			}
+		case <-time.After(RPC_TIMEOUT):
+			// fmt.Println(rf.me, "heartbeat timeout")
+			break
+		}
 	}
 	rf.resetElectionTimer(MIN_ELECTION_TIMEOUT/2, MIN_ELECTION_TIMEOUT)
 }
