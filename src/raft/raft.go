@@ -203,15 +203,28 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		// fmt.Println(rf.me, "reject append entries from", args.LeaderId)
 		return
 	}
-	// TODO 校验leader的日志
-
-	// 维护日志
-
 	rf.beFollower(args.Term, true)
+	rf.mu.Lock()
 	rf.leaderId = args.LeaderId
-	reply.Success = true
 	reply.Term = args.Term
+	// 校验leader的日志
+	reply.Success = len(rf.Logs) >= args.PrevLogIndex && (args.PrevLogIndex == 0 || rf.Logs[args.PrevLogIndex-1].Term == args.PrevLogTerm)
+	// 维护日志
+	if reply.Success {
+		fmt.Println(rf.me, "'s logs replicated successfully")
+		rf.Logs = rf.Logs[:args.PrevLogIndex]
+		rf.Logs = append(rf.Logs, args.Entries...)
+		rf.CommitIndex = args.LeaderCommit
+		// 不考虑回退状态机
+		rf.LastApplied = min(rf.LastApplied, rf.CommitIndex)
+		if rf.LastApplied < rf.CommitIndex {
+			// TODO
+		}
+		rf.persist()
+	}
+	rf.leaderId = args.LeaderId
 	// fmt.Println(rf.me, "receive append entries from", args.LeaderId)
+	rf.mu.Unlock()
 }
 
 func aUpToData(aTerm, aIndex, bTerm, bIndex int) bool {
@@ -536,23 +549,42 @@ func (rf *Raft) sendAppendEntries() {
 		}
 		go func(dst int) {
 			// fmt.Println(rf.me, "send heart beat to", dst)
-			var entries []LogEntry = nil
+			var entries []LogEntry
+			if rf.NextIndex[dst] == len(rf.Logs) {
+				entries = nil
+			} else {
+				entries = rf.Logs[rf.NextIndex[dst]:]
+			}
+			predLogIndex := rf.NextIndex[dst] - 1
+			predLogTerm := 0
+			if predLogIndex >= 0 {
+				predLogTerm = rf.Logs[predLogIndex].Term
+			}
 			args := AppendEntriesArgs{
 				Term:         rf.CurrentTerm,
 				LeaderId:     rf.me,
-				PrevLogIndex: rf.NextIndex[dst] - 1,             // 认为我们已对这个日志（及其之前）达成了一致
-				PrevLogTerm:  rf.Logs[rf.NextIndex[dst]-1].Term, // 认为我们已对这个日志（及其之前）达成了一致
-				Entries:      entries,                           // 基于上两条假设所需要你附加的新日志
+				PrevLogIndex: predLogIndex, // 认为我们已对这个日志（及其之前）达成了一致
+				PrevLogTerm:  predLogTerm,  // 认为我们已对这个日志（及其之前）达成了一致
+				Entries:      entries,      // 基于上两条假设所需要你附加的新日志
 				LeaderCommit: rf.CommitIndex,
-			}
-			if rf.NextIndex[dst] < len(rf.Logs) {
-				// not only heartbeat
 			}
 			reply := AppendEntriesReply{}
 			ok := rf.peers[dst].Call("Raft.AppendEntries", args, &reply)
 			if ok {
 				// fmt.Println(rf.me, "receive heartbeat from", dst)
 				appendResult <- reply.Success
+				if reply.Term == rf.CurrentTerm && rf.state == Leader {
+					rf.mu.Lock()
+					if reply.Success && len(entries) > 0 {
+						rf.NextIndex[dst] += len(entries)
+						rf.MatchIndex[dst] = rf.NextIndex[dst] - 1
+					} else {
+						rf.NextIndex[dst]--
+					}
+					rf.mu.Unlock()
+				} else {
+					rf.beFollower(reply.Term, true)
+				}
 			} else {
 				fmt.Println(rf.me, "failed to send heartbeat to", dst)
 			}
