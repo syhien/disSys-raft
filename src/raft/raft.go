@@ -190,7 +190,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		rf.VotedFor = args.CandidateId
 		reply.VoteGranted = true
 		reply.Term = args.Term
-		// fmt.PrintLn(rf.me, "vote for", args.CandidateId)
+		// fmt.Println(rf.me, "vote for", args.CandidateId)
 	}
 }
 
@@ -198,7 +198,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	if args.Term < rf.CurrentTerm {
 		reply.Success = false
 		reply.Term = rf.CurrentTerm
-		// fmt.PrintLn(rf.me, "reject append entries from", args.LeaderId)
+		// fmt.Println(rf.me, "reject append entries from", args.LeaderId)
 		return
 	}
 	// TODO 校验leader的日志
@@ -209,7 +209,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	rf.leaderId = args.LeaderId
 	reply.Success = true
 	reply.Term = args.Term
-	// fmt.PrintLn(rf.me, "receive append entries from", args.LeaderId)
+	// fmt.Println(rf.me, "receive append entries from", args.LeaderId)
 }
 
 func aUpToData(aTerm, aIndex, bTerm, bIndex int) bool {
@@ -251,9 +251,16 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	index := -1
-	term := -1
-	isLeader := true
+	term := rf.CurrentTerm
+	isLeader := rf.state == Leader
+	if isLeader {
+		index = len(rf.Logs)
+		rf.Logs = append(rf.Logs, LogEntry{Term: term, Command: command})
+		rf.persist()
+	}
 
 	return index, term, isLeader
 }
@@ -276,7 +283,7 @@ func (rf *Raft) beFollower(newTerm int, resetElectionTimer bool) {
 	if resetElectionTimer {
 		rf.resetElectionTimer(MIN_ELECTION_TIMEOUT, MAX_ELECTION_TIMEOUT)
 	}
-	// fmt.PrintLn(rf.me, "become follower at", newTerm)
+	// fmt.Println(rf.me, "become follower at", newTerm)
 	rf.mu.Unlock()
 }
 
@@ -285,14 +292,14 @@ func (rf *Raft) resetElectionTimer(min, max int) {
 	// 	<-rf.electionTimer.C
 	// }
 	nextTimeout := min + rand.Intn(max-min)
-	// fmt.PrintLn(rf.me, "reset election timer to", nextTimeout)
+	// fmt.Println(rf.me, "reset election timer to", nextTimeout)
 	rf.electionTimer.Reset(time.Duration(nextTimeout) * time.Millisecond)
 }
 
 // be Leader
 func (rf *Raft) beLeader() {
 	rf.mu.Lock()
-	// fmt.PrintLn(rf.me, "become leader at", rf.CurrentTerm)
+	// fmt.Println(rf.me, "become leader at", rf.CurrentTerm)
 	rf.state = Leader
 	rf.VotedFor = -1
 	rf.leaderId = rf.me
@@ -314,7 +321,7 @@ func (rf *Raft) beCandidate() {
 	rf.VotedFor = rf.me
 	rf.state = Candidate
 	rf.persist()
-	// fmt.PrintLn(rf.me, "become candidate at", rf.CurrentTerm)
+	// fmt.Println(rf.me, "become candidate at", rf.CurrentTerm)
 	rf.mu.Unlock()
 }
 
@@ -358,10 +365,10 @@ func (rf *Raft) tryElection() {
 	// wait for rf.electionTimer
 	for {
 		<-rf.electionTimer.C
-		// fmt.PrintLn(rf.me, "try to become candidate")
+		// fmt.Println(rf.me, "try to become candidate")
 		if rf.state == Leader {
 			// Leader -> Leader, heart beating
-			// fmt.PrintLn(rf.me, "already leader, heart beat")
+			// fmt.Println(rf.me, "already leader, heart beat")
 			rf.heartBeat()
 			continue
 		}
@@ -388,9 +395,9 @@ func (rf *Raft) tryElection() {
 				reply := RequestVoteReply{}
 
 				go func(dst int) {
-					// fmt.PrintLn(rf.me, "send request vote to", dst)
+					// fmt.Println(rf.me, "send request vote to", dst)
 					if rf.sendRequestVote(dst, args, &reply) {
-						// fmt.PrintLn(rf.me, "receive request vote reply from", dst, "term", reply.Term, "vote granted", reply.VoteGranted)
+						// fmt.Println(rf.me, "receive request vote reply from", dst, "term", reply.Term, "vote granted", reply.VoteGranted)
 						if reply.Term == rf.CurrentTerm {
 							// 防止收到过期的投票
 							voteResult <- reply.VoteGranted
@@ -399,7 +406,7 @@ func (rf *Raft) tryElection() {
 							voteResult <- false
 						}
 					} else {
-						// fmt.PrintLn(rf.me, "send request vote to", dst, "failed")
+						// fmt.Println(rf.me, "send request vote to", dst, "failed")
 						// TODO
 						voteResult <- false
 					}
@@ -407,27 +414,27 @@ func (rf *Raft) tryElection() {
 			}
 
 			if rf.state == Candidate {
-				// fmt.PrintLn(rf.me, "still candidate, counting votes")
+				// fmt.Println(rf.me, "still candidate, counting votes")
 				for range rf.peers {
 					select {
 					case voteGranted := <-voteResult:
 						if voteGranted {
 							voteCount++
-							// fmt.PrintLn(rf.me, "vote count", voteCount)
+							// fmt.Println(rf.me, "vote count", voteCount)
 						}
 					case <-time.After(RPC_TIMEOUT):
-						// fmt.PrintLn(rf.me, "request vote timeout")
+						// fmt.Println(rf.me, "request vote timeout")
 						break
 					}
 				}
 				if voteCount > len(rf.peers)/2 {
 					// become leader
-					// fmt.PrintLn(rf.me, "should become leader")
+					// fmt.Println(rf.me, "should become leader")
 					rf.beLeader()
 					rf.heartBeat()
 				} else {
 					// election failed
-					// fmt.PrintLn(rf.me, "election failed, try another round later")
+					// fmt.Println(rf.me, "election failed, try another round later")
 					rf.resetElectionTimer(MIN_ELECTION_TIMEOUT, MAX_ELECTION_TIMEOUT)
 					continue
 				}
@@ -457,9 +464,9 @@ func (rf *Raft) tryElection() {
 				reply := RequestVoteReply{}
 
 				go func(dst int) {
-					// fmt.PrintLn(rf.me, "send request vote to", dst)
+					// fmt.Println(rf.me, "send request vote to", dst)
 					if rf.sendRequestVote(dst, args, &reply) {
-						// fmt.PrintLn(rf.me, "receive request vote reply from", dst, "term", reply.Term, "vote granted", reply.VoteGranted)
+						// fmt.Println(rf.me, "receive request vote reply from", dst, "term", reply.Term, "vote granted", reply.VoteGranted)
 						if reply.Term == rf.CurrentTerm {
 							// 防止收到过期的投票
 							voteResult <- reply.VoteGranted
@@ -468,7 +475,7 @@ func (rf *Raft) tryElection() {
 							voteResult <- false
 						}
 					} else {
-						// fmt.PrintLn(rf.me, "send request vote to", dst, "failed")
+						// fmt.Println(rf.me, "send request vote to", dst, "failed")
 						// TODO
 						voteResult <- false
 					}
@@ -477,28 +484,28 @@ func (rf *Raft) tryElection() {
 
 			time.Sleep(100 * time.Millisecond)
 			if rf.state == Candidate {
-				// fmt.PrintLn(rf.me, "still candidate, counting votes")
+				// fmt.Println(rf.me, "still candidate, counting votes")
 				for range rf.peers {
 					select {
 					case voteGranted := <-voteResult:
 						if voteGranted {
 							voteCount++
-							// fmt.PrintLn(rf.me, "vote count", voteCount)
+							// fmt.Println(rf.me, "vote count", voteCount)
 						}
 					case <-time.After(RPC_TIMEOUT):
-						// fmt.PrintLn(rf.me, "request vote timeout")
+						// fmt.Println(rf.me, "request vote timeout")
 						break
 					}
 				}
 				if voteCount > len(rf.peers)/2 {
 					// become leader
-					// fmt.PrintLn(rf.me, "should become leader")
+					// fmt.Println(rf.me, "should become leader")
 					rf.beLeader()
 					rf.heartBeat()
 					continue
 				} else {
 					// election failed
-					// fmt.PrintLn(rf.me, "election failed, try another round later")
+					// fmt.Println(rf.me, "election failed, try another round later")
 					rf.resetElectionTimer(MIN_ELECTION_TIMEOUT, MAX_ELECTION_TIMEOUT)
 					continue
 				}
@@ -514,7 +521,7 @@ func (rf *Raft) heartBeat() {
 			continue
 		}
 		go func(dst int) {
-			// fmt.PrintLn(rf.me, "send heart beat to", dst)
+			// fmt.Println(rf.me, "send heart beat to", dst)
 			args := AppendEntriesArgs{
 				Term:         rf.CurrentTerm,
 				LeaderId:     rf.me,
@@ -526,9 +533,9 @@ func (rf *Raft) heartBeat() {
 			reply := AppendEntriesReply{}
 			ok := rf.peers[dst].Call("Raft.AppendEntries", args, &reply)
 			if ok {
-				// fmt.PrintLn(rf.me, "receive heartbeat from", dst)
+				// fmt.Println(rf.me, "receive heartbeat from", dst)
 			} else {
-				// fmt.PrintLn(rf.me, "failed to send heartbeat to", dst)
+				// fmt.Println(rf.me, "failed to send heartbeat to", dst)
 			}
 		}(i)
 	}
