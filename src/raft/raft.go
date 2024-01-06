@@ -86,6 +86,7 @@ type Raft struct {
 	state         int
 	applyChannel  chan ApplyMsg
 	electionTimer *time.Timer
+	leaderId      int
 }
 
 // return currentTerm and whether this server
@@ -205,6 +206,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	// 维护日志
 
 	rf.beFollower(args.Term, true)
+	rf.leaderId = args.LeaderId
 	reply.Success = true
 	reply.Term = args.Term
 	// fmt.PrintLn(rf.me, "receive append entries from", args.LeaderId)
@@ -293,6 +295,7 @@ func (rf *Raft) beLeader() {
 	// fmt.PrintLn(rf.me, "become leader at", rf.CurrentTerm)
 	rf.state = Leader
 	rf.VotedFor = -1
+	rf.leaderId = rf.me
 	rf.persist()
 	for i := range rf.peers {
 		if i == rf.me {
@@ -340,6 +343,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.NextIndex = make([]int, len(peers))
 	rf.MatchIndex = make([]int, len(peers))
 	rf.applyChannel = applyCh
+	rf.leaderId = -1
 	rf.electionTimer = time.NewTimer(MAX_ELECTION_TIMEOUT * time.Millisecond)
 	rf.beFollower(0, true)
 
