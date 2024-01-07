@@ -109,24 +109,24 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	// Your code here.
 	// Example:
-	w := new(bytes.Buffer)
-	e := gob.NewEncoder(w)
-	e.Encode(rf.CurrentTerm)
-	e.Encode(rf.VotedFor)
-	e.Encode(rf.Logs)
-	data := w.Bytes()
-	rf.persister.SaveRaftState(data)
+	// w := new(bytes.Buffer)
+	// e := gob.NewEncoder(w)
+	// e.Encode(rf.CurrentTerm)
+	// e.Encode(rf.VotedFor)
+	// e.Encode(rf.Logs)
+	// data := w.Bytes()
+	// rf.persister.SaveRaftState(data)
 }
 
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
 	// Your code here.
 	// Example:
-	r := bytes.NewBuffer(data)
-	d := gob.NewDecoder(r)
-	d.Decode(&rf.CurrentTerm)
-	d.Decode(&rf.VotedFor)
-	d.Decode(&rf.Logs)
+	// r := bytes.NewBuffer(data)
+	// d := gob.NewDecoder(r)
+	// d.Decode(&rf.CurrentTerm)
+	// d.Decode(&rf.VotedFor)
+	// d.Decode(&rf.Logs)
 }
 
 // example RequestVote RPC arguments structure.
