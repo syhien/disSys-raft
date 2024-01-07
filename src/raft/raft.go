@@ -207,15 +207,15 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	reply.Term = args.Term
 	// 校验leader的日志
 	lastTerm := 0
-	if len(rf.Logs) >= args.PrevLogIndex && args.PrevLogIndex > 0 {
-		lastTerm = rf.Logs[args.PrevLogIndex-1].Term
+	if len(rf.Logs) > args.PrevLogIndex && args.PrevLogIndex >= 0 {
+		lastTerm = rf.Logs[args.PrevLogIndex].Term
 	}
-	reply.Success = len(rf.Logs) >= args.PrevLogIndex && (args.PrevLogIndex == 0 || lastTerm == args.PrevLogTerm)
+	reply.Success = len(rf.Logs) > args.PrevLogIndex && (args.PrevLogIndex == -1 || lastTerm == args.PrevLogTerm)
 	// 维护日志
 	if reply.Success {
-		fmt.Println(rf.me, "'s logs replicated successfully")
-		if args.PrevLogIndex > 0 {
-			rf.Logs = rf.Logs[:args.PrevLogIndex]
+		// fmt.Println(rf.me, "'s logs replicated successfully")
+		if args.PrevLogIndex >= 0 {
+			rf.Logs = rf.Logs[:args.PrevLogIndex+1]
 		}
 		rf.Logs = append(rf.Logs, args.Entries...)
 		rf.CommitIndex = args.LeaderCommit
@@ -223,7 +223,8 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		rf.LastApplied = min(rf.LastApplied, rf.CommitIndex)
 		if rf.LastApplied < rf.CommitIndex {
 			for i := rf.LastApplied + 1; i <= rf.CommitIndex; i++ {
-				rf.applyChannel <- ApplyMsg{Index: i, Command: rf.Logs[i-1].Command}
+				fmt.Println(rf.me, "apply", i+1)
+				rf.applyChannel <- ApplyMsg{Index: i + 1, Command: rf.Logs[i].Command}
 			}
 			rf.LastApplied = rf.CommitIndex
 		}
@@ -279,11 +280,26 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := rf.CurrentTerm
 	isLeader := rf.state == Leader
 	if isLeader {
-		fmt.Println(rf.me, "as the leader, append log")
-		rf.Logs = append(rf.Logs, LogEntry{Term: term, Command: command})
+		fmt.Println(rf.me, "as the leader, append log", command)
+		if len(rf.Logs) == 0 {
+			rf.Logs = append(rf.Logs, LogEntry{Term: term, Command: command})
+		} else if rf.Logs[len(rf.Logs)-1].Command != command {
+			rf.Logs = append(rf.Logs, LogEntry{Term: term, Command: command})
+		} else {
+			fmt.Println(rf.me, "duplicated command")
+		}
+		fmt.Println("before append", rf.Logs)
+		// rf.Logs = append(rf.Logs, LogEntry{Term: term, Command: command})
+		fmt.Println("after append", rf.Logs)
 		index = len(rf.Logs) - 1
 		fmt.Println(rf.me, "append log", index, "now logs:", rf.Logs)
 		rf.persist()
+		// for {
+		// 	time.Sleep(100 * time.Millisecond)
+		// 	if rf.CommitIndex == index {
+		// 		return index, term, isLeader
+		// 	}
+		// }
 	}
 	rf.mu.Unlock()
 	return index, term, isLeader
@@ -333,7 +349,7 @@ func (rf *Raft) beLeader() {
 			continue
 		}
 		rf.NextIndex[i] = len(rf.Logs)
-		rf.MatchIndex[i] = 0
+		rf.MatchIndex[i] = -1
 	}
 	rf.mu.Unlock()
 }
@@ -368,11 +384,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here.
 	rf.CurrentTerm = 0
 	rf.VotedFor = -1
-	rf.Logs = []LogEntry{
-		{Term: 0, Command: nil},
-	}
-	rf.CommitIndex = 0
-	rf.LastApplied = 0
+	rf.Logs = []LogEntry{}
+	rf.CommitIndex = -1
+	rf.LastApplied = -1
 	rf.NextIndex = make([]int, len(peers))
 	rf.MatchIndex = make([]int, len(peers))
 	rf.applyChannel = applyCh
@@ -548,16 +562,23 @@ func (rf *Raft) sendAppendEntries() {
 	// rf.lastSendIndex = updateEndIndex // ?
 	// rf.mu.Unlock()
 	appendResult := make(chan bool, len(rf.peers))
+	fmt.Println(rf.me, "send append entries, self logs", rf.Logs)
 	for i := range rf.peers {
 		if i == rf.me {
 			// don't send heart beat to self
 			appendResult <- true
 			continue
 		}
+		rf.mu.Lock()
+		if rf.state != Leader {
+			rf.mu.Unlock()
+			break
+		}
+		rf.mu.Unlock()
 		go func(dst int) {
 			// fmt.Println(rf.me, "send heart beat to", dst)
 			var entries []LogEntry
-			fmt.Println(rf.me, "leader info", rf.NextIndex[dst], len(rf.Logs))
+			// fmt.Println(rf.me, "leader info", rf.NextIndex[dst], len(rf.Logs))
 			if rf.NextIndex[dst] == len(rf.Logs) {
 				entries = nil
 			} else {
@@ -576,11 +597,11 @@ func (rf *Raft) sendAppendEntries() {
 				Entries:      entries,      // 基于上两条假设所需要你附加的新日志
 				LeaderCommit: rf.CommitIndex,
 			}
-			fmt.Println(rf.me, "send heart beat to", dst, "with args", args)
+			// fmt.Println(rf.me, "send heart beat to", dst, "with args", args)
 			reply := AppendEntriesReply{}
 			ok := rf.peers[dst].Call("Raft.AppendEntries", args, &reply)
 			if ok {
-				fmt.Println(rf.me, "receive heartbeat from", dst, "reply", reply)
+				// fmt.Println(rf.me, "receive heartbeat from", dst, "reply", reply)
 				appendResult <- reply.Success
 				if reply.Term == rf.CurrentTerm && rf.state == Leader {
 					rf.mu.Lock()
@@ -614,9 +635,9 @@ func (rf *Raft) sendAppendEntries() {
 				count++
 			}
 		}
-		if count > len(rf.peers)/2 {
-			fmt.Println(rf.me, "commit index", i)
-			rf.applyChannel <- ApplyMsg{Index: i, Command: rf.Logs[i].Command}
+		if count > (len(rf.peers)+1)/2 {
+			fmt.Println(rf.me, "commit index", i+1)
+			rf.applyChannel <- ApplyMsg{Index: i + 1, Command: rf.Logs[i].Command}
 			rf.CommitIndex = i
 		}
 	}
