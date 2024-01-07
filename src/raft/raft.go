@@ -208,11 +208,17 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	rf.leaderId = args.LeaderId
 	reply.Term = args.Term
 	// 校验leader的日志
-	reply.Success = len(rf.Logs) >= args.PrevLogIndex && (args.PrevLogIndex == 0 || rf.Logs[args.PrevLogIndex-1].Term == args.PrevLogTerm)
+	lastTerm := 0
+	if len(rf.Logs) >= args.PrevLogIndex && args.PrevLogIndex > 0 {
+		lastTerm = rf.Logs[args.PrevLogIndex-1].Term
+	}
+	reply.Success = len(rf.Logs) >= args.PrevLogIndex && (args.PrevLogIndex == 0 || lastTerm == args.PrevLogTerm)
 	// 维护日志
 	if reply.Success {
 		fmt.Println(rf.me, "'s logs replicated successfully")
-		rf.Logs = rf.Logs[:args.PrevLogIndex]
+		if args.PrevLogIndex > 0 {
+			rf.Logs = rf.Logs[:args.PrevLogIndex]
+		}
 		rf.Logs = append(rf.Logs, args.Entries...)
 		rf.CommitIndex = args.LeaderCommit
 		// 不考虑回退状态机
