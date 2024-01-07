@@ -280,8 +280,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := rf.state == Leader
 	if isLeader {
 		fmt.Println(rf.me, "as the leader, append log")
-		index = len(rf.Logs)
 		rf.Logs = append(rf.Logs, LogEntry{Term: term, Command: command})
+		index = len(rf.Logs)
 		rf.persist()
 	}
 
