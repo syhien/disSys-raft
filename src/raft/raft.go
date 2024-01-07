@@ -207,15 +207,15 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	reply.Term = args.Term
 	// 校验leader的日志
 	lastTerm := 0
-	if len(rf.Logs) >= args.PrevLogIndex && args.PrevLogIndex > 0 {
-		lastTerm = rf.Logs[args.PrevLogIndex-1].Term
+	if len(rf.Logs) > args.PrevLogIndex && args.PrevLogIndex >= 0 {
+		lastTerm = rf.Logs[args.PrevLogIndex].Term
 	}
-	reply.Success = len(rf.Logs) >= args.PrevLogIndex && (args.PrevLogIndex == 0 || lastTerm == args.PrevLogTerm)
+	reply.Success = len(rf.Logs) >= args.PrevLogIndex && (args.PrevLogIndex == -1 || lastTerm == args.PrevLogTerm)
 	// 维护日志
 	if reply.Success {
 		fmt.Println(rf.me, "'s logs replicated successfully")
-		if args.PrevLogIndex > 0 {
-			rf.Logs = rf.Logs[:args.PrevLogIndex]
+		if args.PrevLogIndex >= 0 {
+			rf.Logs = rf.Logs[:args.PrevLogIndex+1]
 		}
 		rf.Logs = append(rf.Logs, args.Entries...)
 		rf.CommitIndex = args.LeaderCommit
@@ -223,7 +223,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		rf.LastApplied = min(rf.LastApplied, rf.CommitIndex)
 		if rf.LastApplied < rf.CommitIndex {
 			for i := rf.LastApplied + 1; i <= rf.CommitIndex; i++ {
-				rf.applyChannel <- ApplyMsg{Index: i, Command: rf.Logs[i-1].Command}
+				rf.applyChannel <- ApplyMsg{Index: i + 1, Command: rf.Logs[i].Command}
 			}
 			rf.LastApplied = rf.CommitIndex
 		}
@@ -368,11 +368,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here.
 	rf.CurrentTerm = 0
 	rf.VotedFor = -1
-	rf.Logs = []LogEntry{
-		{Term: 0, Command: nil},
-	}
-	rf.CommitIndex = 0
-	rf.LastApplied = 0
+	rf.Logs = []LogEntry{}
+	rf.CommitIndex = -1
+	rf.LastApplied = -1
 	rf.NextIndex = make([]int, len(peers))
 	rf.MatchIndex = make([]int, len(peers))
 	rf.applyChannel = applyCh
@@ -615,8 +613,8 @@ func (rf *Raft) sendAppendEntries() {
 			}
 		}
 		if count > len(rf.peers)/2 {
-			fmt.Println(rf.me, "commit index", i)
-			rf.applyChannel <- ApplyMsg{Index: i, Command: rf.Logs[i].Command}
+			fmt.Println(rf.me, "commit index", i+1)
+			rf.applyChannel <- ApplyMsg{Index: i + 1, Command: rf.Logs[i].Command}
 			rf.CommitIndex = i
 		}
 	}
