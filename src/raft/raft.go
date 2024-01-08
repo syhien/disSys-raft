@@ -190,48 +190,41 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		rf.VotedFor = args.CandidateId
 		reply.VoteGranted = true
 		reply.Term = args.Term
-		// fmt.Println(rf.me, "vote for", args.CandidateId)
+		fmt.Println(rf.me, "vote for", args.CandidateId)
 	}
 }
 
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
-	if args.Term < rf.CurrentTerm {
+	rf.resetElectionTimer(MIN_ELECTION_TIMEOUT, MAX_ELECTION_TIMEOUT)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.CurrentTerm
+	if args.Term < rf.CurrentTerm || len(rf.Logs) <= args.PrevLogIndex || rf.Logs[args.PrevLogIndex].Term != args.PrevLogTerm {
 		reply.Success = false
-		reply.Term = rf.CurrentTerm
-		fmt.Println(rf.me, "reject append entries from", args.LeaderId)
 		return
 	}
-	rf.beFollower(args.Term, true)
-	rf.mu.Lock()
-	rf.leaderId = args.LeaderId
-	reply.Term = args.Term
-	// 校验leader的日志
-	lastTerm := 0
-	if len(rf.Logs) > args.PrevLogIndex && args.PrevLogIndex >= 0 {
-		lastTerm = rf.Logs[args.PrevLogIndex].Term
+	reply.Success = true
+	if args.Term > rf.CurrentTerm {
+		rf.mu.Unlock()
+		rf.beFollower(args.Term, true)
+		rf.mu.Lock()
+		rf.leaderId = args.LeaderId
 	}
-	reply.Success = len(rf.Logs) >= args.PrevLogIndex && (args.PrevLogIndex == -1 || lastTerm == args.PrevLogTerm)
-	// 维护日志
-	if reply.Success {
-		fmt.Println(rf.me, "'s logs replicated successfully")
-		if args.PrevLogIndex >= 0 {
-			rf.Logs = rf.Logs[:args.PrevLogIndex+1]
+	if args.Entries != nil {
+		entryId := 0
+		for i := args.PrevLogIndex + 1; i < len(rf.Logs) && entryId < len(args.Entries); i++ {
+			rf.Logs[i] = args.Entries[entryId]
+			entryId++
 		}
-		rf.Logs = append(rf.Logs, args.Entries...)
-		rf.CommitIndex = args.LeaderCommit
-		// 不考虑回退状态机
-		rf.LastApplied = min(rf.LastApplied, rf.CommitIndex)
-		if rf.LastApplied < rf.CommitIndex {
-			for i := rf.LastApplied + 1; i <= rf.CommitIndex; i++ {
-				rf.applyChannel <- ApplyMsg{Index: i + 1, Command: rf.Logs[i].Command}
-			}
-			rf.LastApplied = rf.CommitIndex
+		for ; entryId < len(args.Entries); entryId++ {
+			rf.Logs = append(rf.Logs, args.Entries[entryId])
 		}
-		rf.persist()
 	}
-	rf.leaderId = args.LeaderId
-	// fmt.Println(rf.me, "receive append entries from", args.LeaderId)
-	rf.mu.Unlock()
+	if args.LeaderCommit > rf.CommitIndex {
+		rf.CommitIndex = min(args.LeaderCommit, len(rf.Logs)-1)
+		go rf.applyCommits(rf.CommitIndex)
+	}
 }
 
 func aUpToData(aTerm, aIndex, bTerm, bIndex int) bool {
@@ -368,9 +361,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here.
 	rf.CurrentTerm = 0
 	rf.VotedFor = -1
-	rf.Logs = []LogEntry{}
-	rf.CommitIndex = -1
-	rf.LastApplied = -1
+	rf.Logs = []LogEntry{{Term: -1, Command: nil}}
+	rf.CommitIndex = 0
+	rf.LastApplied = 0
 	rf.NextIndex = make([]int, len(peers))
 	rf.MatchIndex = make([]int, len(peers))
 	rf.applyChannel = applyCh
@@ -393,7 +386,7 @@ func (rf *Raft) tryElection() {
 		if rf.state == Leader {
 			// Leader -> Leader, heart beating
 			// fmt.Println(rf.me, "already leader, heart beat")
-			rf.sendAppendEntries()
+			rf.sendAppendEntries(-1)
 			continue
 		}
 		if rf.state == Follower {
@@ -455,7 +448,7 @@ func (rf *Raft) tryElection() {
 					// become leader
 					// fmt.Println(rf.me, "should become leader")
 					rf.beLeader()
-					rf.sendAppendEntries()
+					rf.sendAppendEntries(-1)
 				} else {
 					// election failed
 					// fmt.Println(rf.me, "election failed, try another round later")
@@ -525,7 +518,7 @@ func (rf *Raft) tryElection() {
 					// become leader
 					// fmt.Println(rf.me, "should become leader")
 					rf.beLeader()
-					rf.sendAppendEntries()
+					rf.sendAppendEntries(-1)
 					continue
 				} else {
 					// election failed
@@ -539,98 +532,107 @@ func (rf *Raft) tryElection() {
 	}
 }
 
-func (rf *Raft) sendAppendEntries() {
-	// rf.mu.Lock()
-	// updateEndIndex := len(rf.Logs)
-	// isHeartBeat := updateEndIndex == rf.lastSendIndex
-	// rf.lastSendIndex = updateEndIndex // ?
-	// rf.mu.Unlock()
+func (rf *Raft) sendAppendEntries(updateEnd int) {
+	rf.resetElectionTimer(MIN_ELECTION_TIMEOUT/2, MIN_ELECTION_TIMEOUT)
 	appendResult := make(chan bool, len(rf.peers))
+
 	for i := range rf.peers {
 		if i == rf.me {
-			// don't send heart beat to self
+			// don't send append entries to self
 			appendResult <- true
 			continue
 		}
-		go func(dst int) {
-			// fmt.Println(rf.me, "send heart beat to", dst)
-			var entries []LogEntry
-			fmt.Println(rf.me, "leader info", rf.NextIndex[dst], len(rf.Logs))
-			if rf.NextIndex[dst] == len(rf.Logs) {
-				entries = nil
-			} else {
-				entries = rf.Logs[rf.NextIndex[dst]:]
-			}
-			predLogIndex := rf.NextIndex[dst] - 1
-			predLogTerm := 0
-			if predLogIndex >= 0 {
-				predLogTerm = rf.Logs[predLogIndex].Term
-			}
-			args := AppendEntriesArgs{
-				Term:         rf.CurrentTerm,
-				LeaderId:     rf.me,
-				PrevLogIndex: predLogIndex, // 认为我们已对这个日志（及其之前）达成了一致
-				PrevLogTerm:  predLogTerm,  // 认为我们已对这个日志（及其之前）达成了一致
-				Entries:      entries,      // 基于上两条假设所需要你附加的新日志
-				LeaderCommit: rf.CommitIndex,
-			}
-			fmt.Println(rf.me, "send heart beat to", dst, "with args", args)
-			reply := AppendEntriesReply{}
-			ok := rf.peers[dst].Call("Raft.AppendEntries", args, &reply)
-			if ok {
-				fmt.Println(rf.me, "receive heartbeat from", dst, "reply", reply)
-				appendResult <- reply.Success
-				if reply.Term == rf.CurrentTerm && rf.state == Leader {
-					rf.mu.Lock()
-					if reply.Success && len(entries) > 0 {
-						rf.NextIndex[dst] += len(entries)
-						rf.MatchIndex[dst] = rf.NextIndex[dst] - 1
+		go func(dst int, logEnd int) {
+			reply := AppendEntriesReply{Success: false}
+			for {
+				rf.mu.Lock()
+				prevLogIndex := rf.NextIndex[dst] - 1
+				var entries []LogEntry
+				if logEnd != -1 {
+					// not only heart beat
+					if rf.state != Leader || rf.NextIndex[dst] >= logEnd {
+						rf.mu.Unlock()
+						break
 					}
-					if !reply.Success {
-						fmt.Println(rf.me, "send", args, "return failure with reply", reply)
-						rf.NextIndex[dst]--
+					entries = rf.Logs[rf.NextIndex[dst]:logEnd]
+				}
+				args := AppendEntriesArgs{
+					Term:         rf.CurrentTerm,
+					LeaderId:     rf.me,
+					PrevLogIndex: prevLogIndex,
+					PrevLogTerm:  rf.Logs[prevLogIndex].Term,
+					Entries:      entries,
+					LeaderCommit: rf.CommitIndex,
+				}
+				rf.mu.Unlock()
+				fmt.Println(rf.me, "send append entries to", dst, "with args", args)
+				if !rf.peers[dst].Call("Raft.AppendEntries", args, &reply) {
+					fmt.Println(rf.me, "send append entries to", dst, "failed")
+					// TODO
+					break
+				}
+				if reply.Term > rf.CurrentTerm || rf.state != Leader {
+					rf.beFollower(reply.Term, true)
+					break
+				}
+				if reply.Success {
+					if logEnd != -1 {
+						rf.mu.Lock()
+						if rf.NextIndex[dst] < logEnd-1 {
+							rf.NextIndex[dst] = logEnd - 1
+							rf.MatchIndex[dst] = logEnd - 1
+						}
+						rf.mu.Unlock()
+					}
+					break
+				} else {
+					rf.mu.Lock()
+					logEnd = len(rf.Logs) // turn to len(rf.Logs) if heartbeat
+					if rf.NextIndex[dst] > 1 {
+						rf.NextIndex[dst] -= 1
 					}
 					rf.mu.Unlock()
-				} else {
-					rf.beFollower(reply.Term, true)
 				}
-			} else {
-				fmt.Println(rf.me, "failed to send heartbeat to", dst)
 			}
-		}(i)
+			appendResult <- reply.Success
+		}(i, updateEnd)
 	}
 
-	time.Sleep(MIN_ELECTION_TIMEOUT / 2)
-	rf.mu.Lock()
-	for i := rf.CommitIndex + 1; i < len(rf.Logs); i++ {
-		count := 1
-		for j := range rf.peers {
-			if j == rf.me {
-				continue
-			}
-			if rf.MatchIndex[j] >= i {
-				count++
-			}
+	count := 0
+	for range rf.peers {
+		if rf.state != Leader {
+			break
 		}
-		if count > len(rf.peers)/2 {
-			fmt.Println(rf.me, "commit index", i+1)
-			rf.applyChannel <- ApplyMsg{Index: i + 1, Command: rf.Logs[i].Command}
-			rf.CommitIndex = i
+		select {
+		case success := <-appendResult:
+			if updateEnd == -1 {
+				return
+			}
+			if updateEnd != -1 && success {
+				count++
+				if count > (1+len(rf.peers))/2 {
+					newCommitIndex := updateEnd - 1
+					rf.mu.Lock()
+					if newCommitIndex > rf.CommitIndex {
+						rf.CommitIndex = newCommitIndex
+						go rf.applyCommits(newCommitIndex)
+					}
+					rf.mu.Unlock()
+					return
+				}
+			}
 		}
 	}
+}
+
+func (rf *Raft) applyCommits(commitIndex int) {
+	var msg ApplyMsg
+	rf.mu.Lock()
+	for rf.LastApplied < commitIndex {
+		rf.LastApplied += 1
+		msg.Index = rf.LastApplied
+		msg.Command = rf.Logs[rf.LastApplied].Command
+		rf.applyChannel <- msg
+	}
 	rf.mu.Unlock()
-	// for range rf.peers {
-	// 	select {
-	// 	case success := <-appendResult:
-	// 		if success {
-	// 			// fmt.Println(rf.me, "append success")
-	// 		} else {
-	// 			// fmt.Println(rf.me, "append failed")
-	// 		}
-	// 	case <-time.After(RPC_TIMEOUT):
-	// 		// fmt.Println(rf.me, "heartbeat timeout")
-	// 		break
-	// 	}
-	// }
-	rf.resetElectionTimer(MIN_ELECTION_TIMEOUT/2, MIN_ELECTION_TIMEOUT)
 }
