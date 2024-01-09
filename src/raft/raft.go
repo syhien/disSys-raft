@@ -331,7 +331,7 @@ func (rf *Raft) sendAppendEntries(updateEnd int) {
 	for i := range rf.peers {
 		if i == rf.me {
 			appendResult <- true
-			rf.resetElectionTimer(true) // 长一点不然莫名被打断
+			rf.resetElectionTimer(true) // 下个心跳前足够
 			continue
 		}
 		go func(dst int, appendEnd int) {
@@ -398,7 +398,6 @@ func (rf *Raft) sendAppendEntries(updateEnd int) {
 	}
 
 	successCount := 0
-	successCount += 1 // self
 	for i := range rf.peers {
 		select {
 		case success := <-appendResult:
@@ -432,6 +431,7 @@ func (rf *Raft) apply(commitIndex int) {
 			Index:   rf.LastApplied,
 			Command: rf.Logs[rf.LastApplied].Command,
 		}
+		fmt.Println(rf.me, "apply", rf.LastApplied)
 	}
 	rf.mu.Unlock()
 }
