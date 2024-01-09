@@ -257,10 +257,11 @@ func (rf *Raft) sendRequestVote() bool {
 				fmt.Println(rf.me, "vote count", voteCount)
 			}
 			if rf.leaderId != -1 || voteCount > len(rf.peers)/2 {
-				break
+				// 用break完全跳不出for
+				return voteCount > len(rf.peers)/2
 			}
 		case <-time.After(100 * time.Millisecond):
-			break
+			return voteCount > len(rf.peers)/2
 		}
 	}
 	return voteCount > len(rf.peers)/2
