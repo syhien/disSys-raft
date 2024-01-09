@@ -103,28 +103,28 @@ func (rf *Raft) GetState() (int, bool) {
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
-func (rf *Raft) persist() {
-	// Your code here.
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := gob.NewEncoder(w)
-	// e.Encode(rf.CurrentTerm)
-	// e.Encode(rf.VotedFor)
-	// e.Encode(rf.Logs)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
-}
+// func (rf *Raft) persist() {
+// 	// Your code here.
+// 	// Example:
+// 	// w := new(bytes.Buffer)
+// 	// e := gob.NewEncoder(w)
+// 	// e.Encode(rf.CurrentTerm)
+// 	// e.Encode(rf.VotedFor)
+// 	// e.Encode(rf.Logs)
+// 	// data := w.Bytes()
+// 	// rf.persister.SaveRaftState(data)
+// }
 
 // restore previously persisted state.
-func (rf *Raft) readPersist(data []byte) {
-	// Your code here.
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := gob.NewDecoder(r)
-	// d.Decode(&rf.CurrentTerm)
-	// d.Decode(&rf.VotedFor)
-	// d.Decode(&rf.Logs)
-}
+// func (rf *Raft) readPersist(data []byte) {
+// 	// Your code here.
+// 	// Example:
+// 	// r := bytes.NewBuffer(data)
+// 	// d := gob.NewDecoder(r)
+// 	// d.Decode(&rf.CurrentTerm)
+// 	// d.Decode(&rf.VotedFor)
+// 	// d.Decode(&rf.Logs)
+// }
 
 // example RequestVote RPC arguments structure.
 type RequestVoteArgs struct {
@@ -500,7 +500,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.resetElectionTimer(false)
 
 	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
+	// rf.readPersist(persister.ReadRaftState())
 
 	go func() {
 		for {
