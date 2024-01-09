@@ -331,7 +331,7 @@ func (rf *Raft) sendAppendEntries(updateEnd int) {
 	for i := range rf.peers {
 		if i == rf.me {
 			appendResult <- true
-			rf.resetElectionTimer(false) // 长一点不然莫名被打断
+			rf.resetElectionTimer(true) // 长一点不然莫名被打断
 			continue
 		}
 		go func(dst int, appendEnd int) {
@@ -448,10 +448,22 @@ func (rf *Raft) apply(commitIndex int) {
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	rf.mu.Lock()
 
+	index := -1
+	term := rf.CurrentTerm
+	isLeader := rf.leaderId == rf.me
+
+	if isLeader {
+		index = len(rf.Logs)
+		rf.Logs = append(rf.Logs, LogEntry{
+			Term:    term,
+			Command: command,
+		})
+		go rf.sendAppendEntries(len(rf.Logs))
+	}
+
+	rf.mu.Unlock()
 	return index, term, isLeader
 }
 
