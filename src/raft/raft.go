@@ -18,7 +18,6 @@ package raft
 //
 
 import (
-	"fmt"
 	"labrpc"
 	"math/rand"
 	"sync"
@@ -151,40 +150,37 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
-// example RequestVote RPC handler.
+// Example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
-	fmt.Println(rf.me, "receive request vote from", args.CandidateId)
+	defer rf.mu.Unlock()
+
 	reply.Term = rf.CurrentTerm
 	reply.VoteGranted = false
 
-	if args.Term > rf.CurrentTerm {
-		// 无论是否投票，都要更新term
+	if args.Term > rf.CurrentTerm { // 无条件更新term
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = -1
 		if rf.leaderId == rf.me {
-			// 遇到term更高的，退位
 			rf.leaderId = -1
 		}
 	}
 
-	if rf.VotedFor == args.CandidateId {
-		// 可能的冗余
+	if rf.VotedFor == args.CandidateId || (rf.VotedFor == -1 && isCandidateLogUpToDate(args, rf.Logs)) {
 		reply.VoteGranted = true
-	} else if rf.VotedFor == -1 {
-		lastIndex := len(rf.Logs) - 1
-		reply.VoteGranted = args.LastLogTerm > rf.Logs[lastIndex].Term ||
-			(args.LastLogTerm == rf.Logs[lastIndex].Term && args.LastLogIndex >= lastIndex)
-	}
-	if reply.VoteGranted {
 		rf.VotedFor = args.CandidateId
 		rf.resetElectionTimer(false)
 	}
-	fmt.Println(rf.me, "vote", reply.VoteGranted)
-	rf.mu.Unlock()
 }
 
-// example code to send a RequestVote RPC to a server.
+// Helper function to check if candidate's log is up to date.
+func isCandidateLogUpToDate(args RequestVoteArgs, logs []LogEntry) bool {
+	lastIndex := len(logs) - 1
+	return args.LastLogTerm > logs[lastIndex].Term ||
+		(args.LastLogTerm == logs[lastIndex].Term && args.LastLogIndex >= lastIndex)
+}
+
+// Refactored code to send a RequestVote RPC to a server.
 // server is the index of the target server in rf.peers[].
 // expects RPC arguments in args.
 // fills in *reply with RPC reply, so caller should
@@ -201,15 +197,15 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 func (rf *Raft) sendRequestVote() bool {
 	// be candidate
-	// 其实不需要显式转换（？
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	rf.leaderId = -1 // 必须丢弃旧leader，不再是follower
 	rf.CurrentTerm += 1
 	rf.VotedFor = rf.me
 	rf.resetElectionTimer(false)
-	rf.mu.Unlock()
 
-	fmt.Println(rf.me, "send request vote at", rf.CurrentTerm)
+	// fmt.Println(rf.me, "send request vote at", rf.CurrentTerm)
 
 	args := RequestVoteArgs{
 		Term:         rf.CurrentTerm,
@@ -233,16 +229,15 @@ func (rf *Raft) sendRequestVote() bool {
 			if rf.leaderId != -1 || rf.CurrentTerm > args.Term { // 已经是leader或者是旧的选举
 				voteResult <- false
 				return
-			} else if rf.peers[dst].Call("Raft.RequestVote", args, &reply) {
-				fmt.Println(rf.me, "receive vote from", dst, reply.VoteGranted)
-				rf.mu.Lock()
+			}
+			if rf.peers[dst].Call("Raft.RequestVote", args, &reply) {
+				// fmt.Println(rf.me, "receive vote from", dst, reply.VoteGranted)
 				if reply.Term > rf.CurrentTerm {
 					// 选举失败变回follower
 					rf.CurrentTerm = reply.Term
 					rf.VotedFor = -1
 					// 不修改leaderId 可能正在给人投票
 				}
-				rf.mu.Unlock()
 			}
 			voteResult <- reply.VoteGranted
 		}(i)
@@ -254,7 +249,7 @@ func (rf *Raft) sendRequestVote() bool {
 		case granted := <-voteResult:
 			if granted {
 				voteCount++
-				fmt.Println(rf.me, "vote count", voteCount)
+				// fmt.Println(rf.me, "vote count", voteCount)
 			}
 			if rf.leaderId != -1 || voteCount > len(rf.peers)/2 {
 				// 用break完全跳不出for
@@ -286,12 +281,12 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args ApplyEntriesArgs, reply *AppendEntriesReply) {
 	rf.resetElectionTimer(false)
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	reply.Term = rf.CurrentTerm // 无条件回复
+	reply.Term = rf.CurrentTerm // 无条件回送term
 
 	if args.Term < rf.CurrentTerm || len(rf.Logs) <= args.PrevLogIndex || rf.Logs[args.PrevLogIndex].Term != args.PrevLogTerm {
 		reply.Success = false
-		rf.mu.Unlock()
 		return
 	}
 
@@ -320,10 +315,8 @@ func (rf *Raft) AppendEntries(args ApplyEntriesArgs, reply *AppendEntriesReply) 
 		rf.CommitIndex = min(args.LeaderCommit, len(rf.Logs)-1)
 		go rf.apply(rf.CommitIndex)
 	}
-	rf.mu.Unlock()
 }
 
-// 同步到updateEnd
 func (rf *Raft) sendAppendEntries(updateEnd int) {
 	rf.resetElectionTimer(true)
 
@@ -332,7 +325,7 @@ func (rf *Raft) sendAppendEntries(updateEnd int) {
 	for i := range rf.peers {
 		if i == rf.me {
 			appendResult <- true
-			rf.resetElectionTimer(true) // 下个心跳前足够
+			rf.resetElectionTimer(true)
 			continue
 		}
 		go func(dst int, appendEnd int) {
@@ -361,8 +354,7 @@ func (rf *Raft) sendAppendEntries(updateEnd int) {
 					LeaderCommit: rf.CommitIndex,
 				}
 				rf.mu.Unlock()
-				if !rf.peers[dst].Call("Raft.AppendEntries", args, &reply) {
-					// TODO
+				if !rf.peers[dst].Call("Raft.AppendEntries", args, &reply) { // RPC failed, nothing to do
 					break
 				}
 				if reply.Term > rf.CurrentTerm || rf.leaderId != rf.me {
@@ -378,7 +370,7 @@ func (rf *Raft) sendAppendEntries(updateEnd int) {
 				if reply.Success {
 					if appendEnd != -1 {
 						rf.mu.Lock()
-						if rf.NextIndex[dst] < appendEnd-1 { // 会出现被别的进程更新到后面的情况吗
+						if rf.NextIndex[dst] < appendEnd-1 {
 							rf.NextIndex[dst] = appendEnd - 1
 							rf.MatchIndex[dst] = appendEnd - 1
 						}
@@ -399,15 +391,14 @@ func (rf *Raft) sendAppendEntries(updateEnd int) {
 	}
 
 	successCount := 0
-	for i := range rf.peers {
+	for range rf.peers {
 		select {
 		case success := <-appendResult:
-			if updateEnd == -1 && i > 1 {
-				// 是heartbeat而且有人收到过了不用看后面了
+			if updateEnd == -1 {
 				return
 			}
-			if updateEnd != -1 && success {
-				successCount += 1
+			if success {
+				successCount++
 				if successCount > len(rf.peers)/2 {
 					rf.mu.Lock()
 					if updateEnd-1 > rf.CommitIndex {
@@ -432,7 +423,7 @@ func (rf *Raft) apply(commitIndex int) {
 			Index:   rf.LastApplied,
 			Command: rf.Logs[rf.LastApplied].Command,
 		}
-		fmt.Println(rf.me, "apply", rf.LastApplied)
+		// fmt.Println(rf.me, "apply", rf.LastApplied)
 	}
 	rf.mu.Unlock()
 }
@@ -495,7 +486,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.CurrentTerm = 0
 	rf.VotedFor = -1
 	rf.Logs = []LogEntry{{Term: -1, Command: nil}}
-	fmt.Println("init logs", rf.Logs)
+	// fmt.Println("init logs", rf.Logs)
 
 	rf.CommitIndex = 0
 	rf.LastApplied = 0
@@ -524,10 +515,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				select {
 				case <-rf.unionTimer.C: // send request vote
 					electionResult := rf.sendRequestVote()
-					fmt.Println(rf.me, "election result", electionResult)
+					// fmt.Println(rf.me, "election result", electionResult)
 					if electionResult && rf.leaderId == -1 {
 						rf.mu.Lock()
-						fmt.Println(rf.me, "become leader at", rf.CurrentTerm)
+						// fmt.Println(rf.me, "become leader at", rf.CurrentTerm)
 						rf.leaderId = rf.me
 						for i := range rf.peers {
 							rf.NextIndex[i] = len(rf.Logs)
