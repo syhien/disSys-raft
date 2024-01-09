@@ -482,11 +482,11 @@ func (rf *Raft) apply(commitIndex int) {
 
 Persist之前的测试都可以正常通过。
 
-将代码中的输出debug的信息注释后运行一次TestReElection观察输出：
+将代码中的输出debug的信息取消注释后运行一次TestReElection观察输出：
 
 ![](reelection.png)
 
-中途因为被disconnect了，选举一直无法成功。在重新connect后系统第一执行恢复了正常运转。
+中途因为被disconnect了，选举一直无法成功。在重新connect后系统恢复了正常运转。
 
 运行一次TestFailAgree观察输出：
 
